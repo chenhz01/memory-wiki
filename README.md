@@ -1,5 +1,12 @@
 # memory-wiki
 
+> **Part of the Evidence-first Agents suite** — tooling that makes AI agents
+> accountable instead of just capable: [answer-contract](https://github.com/chenhz01/answer-contract)
+> (output discipline) · [skill-spec](https://github.com/chenhz01/skill-spec)
+> (spec discipline) · [memory-wiki](https://github.com/chenhz01/memory-wiki)
+> (memory discipline). Same author, same zero-dependency philosophy.
+
+
 **The file-layer wiki for your agent's markdown memory.** Your agent remembers in scattered `.md` files. Give those files an index, a search, and a health check — without a database, a server, or a single dependency.
 
 Agent memory tools keep racing toward vector stores and hosted services. But most agents (and most people) keep memory where it already works: **plain markdown files**. memory-wiki is the missing file layer — it treats your memory folder like code: indexed, searchable, and linted.
