@@ -12,6 +12,8 @@ Commands:
     index  --wiki <dir>              rebuild the wiki's index.md
     query  <terms...> --wiki <dir>   keyword search across entries (ranked)
     lint   --wiki <dir>              health check: rot report, exit 1 on FAIL
+    fresh  --wiki <dir>              freshness report: fresh / stale / rotten / undated
+    refresh <entries...> --wiki <dir> mark entries as re-verified today (closes the loop)
     log    --wiki <dir>              show the operation log
 
 Zero dependencies. No server. Plain markdown. Everything stays on your disk.
@@ -28,6 +30,7 @@ from pathlib import Path
 ENTRIES = "entries"
 MAX_LINES = 400
 DATE_RE = re.compile(r"(20\d{2}-\d{2}-\d{2})")
+LV_RE = re.compile(r"last-verified:\s*(20\d{2}-\d{2}-\d{2})")
 
 
 def slugify(path: Path) -> str:
@@ -46,12 +49,16 @@ def wiki_paths(wiki: Path) -> tuple[Path, Path, Path, Path]:
 def entry_stats(p: Path) -> dict:
     text = read(p)
     lines = text.splitlines()
-    m = DATE_RE.search(text[:400])
+    lv_m = LV_RE.search(text[:400])
+    d_m = None if lv_m else DATE_RE.search(text[:400])
     title_m = re.search(r"^#\s+(.+)$", text, re.MULTILINE)
     first = next((l.strip() for l in lines if l.strip() and not l.startswith("#")), "")
     return {
         "path": p, "title": (title_m.group(1).strip() if title_m else p.stem),
-        "date": m.group(1) if m else "", "lines": len(lines),
+        # effective date: last-verified wins over the original date — a refreshed
+        # entry is as fresh as its verification, not its birth
+        "date": (lv_m.group(1) if lv_m else (d_m.group(1) if d_m else "")),
+        "verified": bool(lv_m), "lines": len(lines),
         "first": first[:100], "text": text,
     }
 
@@ -92,10 +99,11 @@ def cmd_index(wiki: Path) -> int:
         print(f"no {ENTRIES}/ under {wiki}")
         return 1
     rows = sorted((entry_stats(p) for p in edir.glob("*.md")), key=lambda s: (s["date"], s["path"].name), reverse=True)
-    out = ["# Index", "", "| entry | date | first line |", "|---|---|---|"]
+    out = ["# Index", "", "| entry | date | last verified | first line |", "|---|---|---|---|"]
     for s in rows:
         rel = f"{ENTRIES}/{s['path'].name}"
-        out.append(f"| [{s['title']}]({rel}) | {s['date'] or '—'} | {s['first'] or '—'} |")
+        lv = "✓" if s["verified"] else "—"
+        out.append(f"| [{s['title']}]({rel}) | {s['date'] or '—'} | {lv} | {s['first'] or '—'} |")
     index.write_text("\n".join(out) + "\n", encoding="utf-8", newline="\n")
     print(f"index rebuilt: {len(rows)} entr(y|ies) -> {index}")
     return 0
@@ -158,6 +166,70 @@ def cmd_lint(wiki: Path) -> int:
     return 1 if fails else 0
 
 
+def cmd_fresh(wiki: Path, max_age: int, rot_age: int) -> int:
+    """Freshness report: entries classified by effective date age."""
+    _, _, _, edir = wiki_paths(wiki)
+    if not edir.exists():
+        print(f"no {ENTRIES}/ under {wiki}")
+        return 1
+    today = date.today()
+    buckets: dict[str, list[str]] = {"fresh": [], "stale": [], "rotten": [], "undated": []}
+    for p in sorted(edir.glob("*.md")):
+        s = entry_stats(p)
+        if not s["date"]:
+            buckets["undated"].append(p.name)
+            continue
+        age = (today - date.fromisoformat(s["date"])).days
+        if age > rot_age:
+            buckets["rotten"].append(f"{p.name} ({age}d)")
+        elif age > max_age:
+            buckets["stale"].append(f"{p.name} ({age}d)")
+        else:
+            buckets["fresh"].append(f"{p.name} ({age}d)")
+    mark = {"fresh": "✅", "stale": "🟡", "rotten": "🧟", "undated": "❓"}
+    for k in ("rotten", "stale", "undated", "fresh"):
+        items = buckets[k]
+        print(f"{mark[k]} [{k}] {len(items)}")
+        for it in items:
+            print(f"    - {it}")
+    total = sum(len(v) for v in buckets.values())
+    print(f"\nfresh: {total} entries — {len(buckets['fresh'])} fresh, "
+          f"{len(buckets['stale'])} stale, {len(buckets['rotten'])} rotten, "
+          f"{len(buckets['undated'])} undated")
+    print("next step: re-check the rotten ones, then run `refresh` on them")
+    return 1 if buckets["rotten"] else 0
+
+
+def cmd_refresh(names: list[str], wiki: Path) -> int:
+    """Mark entries as re-verified today: the loop-closing half of `fresh`."""
+    _, _, _, edir = wiki_paths(wiki)
+    if not edir.exists():
+        print(f"no {ENTRIES}/ under {wiki}")
+        return 1
+    today = date.today().isoformat()
+    n = 0
+    for name in names:
+        p = edir / (name if name.endswith(".md") else f"{name}.md")
+        if not p.exists():
+            print(f"  SKIP {name} (no such entry)")
+            continue
+        text = read(p)
+        if "last-verified:" in text:
+            text = re.sub(r"last-verified:\s*20\d{2}-\d{2}-\d{2}", f"last-verified: {today}", text)
+        elif text.startswith("---"):
+            end = text.index("---", 3) + 3
+            text = text[:end] + f"\nlast-verified: {today}" + text[end:]
+        else:
+            text = f"---\nlast-verified: {today}\n---\n\n" + text
+        p.write_text(text, encoding="utf-8", newline="\n")
+        append_log(wiki, f"REFRESH {p.name} (last-verified: {today})")
+        print(f"  REFRESHED {p.name}")
+        n += 1
+    cmd_index(wiki)
+    print(f"refreshed {n} entry(ies); index rebuilt")
+    return 0
+
+
 def cmd_log(wiki: Path, tail: int) -> int:
     _, _, log, _ = wiki_paths(wiki)
     if not log.exists():
@@ -178,6 +250,8 @@ def main() -> int:
     px = sub.add_parser("index"); add_wiki(px)
     pq = sub.add_parser("query"); pq.add_argument("terms", nargs="+"); add_wiki(pq)
     pl2 = sub.add_parser("lint"); add_wiki(pl2)
+    pf = sub.add_parser("fresh"); pf.add_argument("--max-age", type=int, default=30, help="days before an entry counts as stale (default: 30)"); pf.add_argument("--rot-age", type=int, default=90, help="days before an entry counts as rotten (default: 90)"); add_wiki(pf)
+    pr = sub.add_parser("refresh"); pr.add_argument("names", nargs="+", help="entry file names (with or without .md)"); add_wiki(pr)
     pl = sub.add_parser("log"); pl.add_argument("--tail", type=int, default=20); add_wiki(pl)
     a = ap.parse_args()
 
@@ -189,6 +263,10 @@ def main() -> int:
         return cmd_query(a.terms, a.wiki)
     if a.cmd == "lint":
         return cmd_lint(a.wiki)
+    if a.cmd == "fresh":
+        return cmd_fresh(a.wiki, a.max_age, a.rot_age)
+    if a.cmd == "refresh":
+        return cmd_refresh(a.names, a.wiki)
     if a.cmd == "log":
         return cmd_log(a.wiki, a.tail)
     return 1

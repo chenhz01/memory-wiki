@@ -48,6 +48,22 @@ This is keyword ranking, not semantic search — it finds the words you wrote, n
 
 Produced through human-AI collaboration: the tool was drafted by an AI coding agent and reviewed, edited, and approved by a human maintainer. Shipped only after its own acceptance run (ingest → index → query → lint, including a deliberately rotted fixture) behaved as specified.
 
+## The freshness loop (v0.2.0)
+
+Everyone generates wikis; nobody keeps them honest. A stale memory is worse than
+no memory — the agent fails confidently. memory-wiki closes the loop:
+
+```bash
+python tools/memory_wiki.py fresh  --wiki wiki          # classify: fresh / stale / rotten / undated (exit 1 on rotten)
+python tools/memory_wiki.py refresh stale.md rotten.md --wiki wiki   # mark re-verified today
+python tools/memory_wiki.py fresh  --wiki wiki          # exit 0 when nothing is rotten
+```
+
+`refresh` stamps `last-verified:` into the entry; the effective date of an entry
+is its last verification, not its birth. The agent (or you) re-checks rotten
+entries, refreshes them, and `fresh` goes green — synchronization as a loop,
+not a one-time build.
+
 ## License
 
 MIT — use it, fork it, wire it into your agent's routine. Attribution appreciated, not required.
